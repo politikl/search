@@ -834,8 +834,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if args.len() < 2 {
         eprintln!("Usage: search <query>");
-        eprintln!("       search about    - Show about information");
-        eprintln!("       search history  - Show browsing history");
+        eprintln!("       search about  - Show about information");
+        eprintln!("       search -h     - Show browsing history");
         eprintln!("Example: search rust programming");
         std::process::exit(1);
     }
@@ -848,7 +848,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Check for history command
-    if query.to_lowercase() == "history" {
+    if query == "-h" {
         return show_history();
     }
 

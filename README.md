@@ -75,11 +75,11 @@ The TUI will launch showing your search results. Navigate, select, and read - al
 ### Special Commands
 
 ```bash
-search about    # Show about information
-search history  # View your browsing history
+search about  # Show about information
+search -h     # View your browsing history
 ```
 
-The history command shows all pages you've visited along with the search query that led you there and when you visited.
+The `-h` flag shows all pages you've visited along with the search query that led you there and when you visited.
 
 ## Keybindings
 
