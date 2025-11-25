@@ -72,6 +72,15 @@ search best practices for API design
 
 The TUI will launch showing your search results. Navigate, select, and read - all without leaving your terminal.
 
+### Special Commands
+
+```bash
+search about    # Show about information
+search history  # View your browsing history
+```
+
+The history command shows all pages you've visited along with the search query that led you there and when you visited.
+
 ## Keybindings
 
 Search uses a modal interface inspired by vim. There are two main views: Search Results and Web Page, each with Normal and Insert/Browse modes.
