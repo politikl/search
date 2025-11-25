@@ -1,4 +1,4 @@
-# Ghost Browse - Terminal Web Browser
+# Search - Terminal Web Browser
 
 **A full terminal-based web browser with vim-style navigation.** Search the web and view pages without leaving your terminal.
 

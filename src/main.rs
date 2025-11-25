@@ -292,7 +292,7 @@ fn draw_search_results(f: &mut ratatui::Frame, app: &mut App) {
         Span::raw("  Search: "),
         Span::styled(&app.query, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
     ]))
-    .block(Block::default().borders(Borders::ALL).title("Ghost Browse"));
+    .block(Block::default().borders(Borders::ALL).title("Search"));
     f.render_widget(header, chunks[0]);
 
     // Results list
