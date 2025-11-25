@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent},
     execute,
@@ -12,9 +13,12 @@ use ratatui::{
     Terminal,
 };
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::error::Error;
+use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 fn truncate_string(s: &str, max_chars: usize) -> String {
@@ -33,6 +37,58 @@ fn sanitize_display(s: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+// History functionality
+#[derive(Serialize, Deserialize, Clone)]
+struct HistoryEntry {
+    query: String,
+    title: String,
+    url: String,
+    timestamp: DateTime<Local>,
+}
+
+fn get_history_path() -> PathBuf {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("search");
+    fs::create_dir_all(&config_dir).ok();
+    config_dir.join("history.json")
+}
+
+fn load_history() -> Vec<HistoryEntry> {
+    let path = get_history_path();
+    if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+fn save_history(history: &[HistoryEntry]) {
+    let path = get_history_path();
+    if let Ok(json) = serde_json::to_string_pretty(history) {
+        fs::write(&path, json).ok();
+    }
+}
+
+fn add_to_history(query: &str, title: &str, url: &str) {
+    let mut history = load_history();
+    history.insert(
+        0,
+        HistoryEntry {
+            query: query.to_string(),
+            title: title.to_string(),
+            url: url.to_string(),
+            timestamp: Local::now(),
+        },
+    );
+    // Keep only the last 100 entries
+    history.truncate(100);
+    save_history(&history);
 }
 
 #[derive(Clone)]
@@ -142,6 +198,9 @@ impl App {
                     self.page_title = result.title.clone();
                     self.page_url = result.url.clone();
                     self.page_scroll = 0;
+
+                    // Save to history
+                    add_to_history(&self.query, &result.title, &result.url);
 
                     // Fetch and render the page
                     match fetch_page(&result.url) {
@@ -627,12 +686,156 @@ fn show_about() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn show_history() -> Result<(), Box<dyn Error>> {
+    let history = load_history();
+
+    if history.is_empty() {
+        println!("No history yet. Browse some pages to build your history.");
+        return Ok(());
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(0));
+    let mut scroll_offset = 0usize;
+
+    loop {
+        terminal.draw(|f| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(0),
+                    Constraint::Length(3),
+                ])
+                .split(f.area());
+
+            // Header
+            let header = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    " HISTORY ",
+                    Style::default()
+                        .bg(Color::Magenta)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {} entries", history.len())),
+            ]))
+            .block(Block::default().borders(Borders::ALL).title("Search History"));
+            f.render_widget(header, chunks[0]);
+
+            // History list
+            let visible_height = chunks[1].height.saturating_sub(2) as usize;
+            let items: Vec<ListItem> = history
+                .iter()
+                .skip(scroll_offset)
+                .take(visible_height / 4 + 1)
+                .map(|entry| {
+                    let lines = vec![
+                        Line::from(vec![
+                            Span::styled(
+                                truncate_string(&entry.title, 60),
+                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                            ),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("  Query: ", Style::default().fg(Color::Gray)),
+                            Span::styled(
+                                truncate_string(&entry.query, 50),
+                                Style::default().fg(Color::Yellow),
+                            ),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("  URL: ", Style::default().fg(Color::Gray)),
+                            Span::styled(
+                                truncate_string(&entry.url, 55),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("  ", Style::default()),
+                            Span::styled(
+                                entry.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]),
+                    ];
+                    ListItem::new(lines)
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(format!(
+                    " Showing {}-{} of {} ",
+                    scroll_offset + 1,
+                    (scroll_offset + visible_height / 4 + 1).min(history.len()),
+                    history.len()
+                )))
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">> ");
+
+            f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+            // Footer
+            let footer = Paragraph::new(" [j/k] Navigate  [q/Esc] Exit ")
+                .style(Style::default().fg(Color::Gray))
+                .block(Block::default().borders(Borders::ALL).title("Keys"));
+            f.render_widget(footer, chunks[2]);
+        })?;
+
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+                match code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if scroll_offset < history.len().saturating_sub(1) {
+                            scroll_offset += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        scroll_offset = scroll_offset.saturating_sub(1);
+                    }
+                    KeyCode::Char('J') => {
+                        scroll_offset = (scroll_offset + 5).min(history.len().saturating_sub(1));
+                    }
+                    KeyCode::Char('K') => {
+                        scroll_offset = scroll_offset.saturating_sub(5);
+                    }
+                    KeyCode::Char('g') => {
+                        scroll_offset = 0;
+                    }
+                    KeyCode::Char('G') => {
+                        scroll_offset = history.len().saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
         eprintln!("Usage: search <query>");
         eprintln!("       search about    - Show about information");
+        eprintln!("       search history  - Show browsing history");
         eprintln!("Example: search rust programming");
         std::process::exit(1);
     }
@@ -642,6 +845,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Check for about command
     if query.to_lowercase() == "about" {
         return show_about();
+    }
+
+    // Check for history command
+    if query.to_lowercase() == "history" {
+        return show_history();
     }
 
     println!("Searching for: {}...", query);
