@@ -1,9 +1,11 @@
 [package]
 name = "search"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 reqwest = { version = "0.11", features = ["blocking"] }
 scraper = "0.17"
 colored = "2.0"
+ratatui = "0.28"
+crossterm = "0.28"
