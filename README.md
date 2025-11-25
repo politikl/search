@@ -39,7 +39,33 @@ No ads. No suggested videos. No "people also searched for" rabbit holes. Just th
 
 ## Installation
 
+### Quick Install (Recommended)
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/politikl/search/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/politikl/search/main/install.ps1 | iex
+```
+
+After installation, add to your PATH:
+
+**macOS / Linux** - Add this to your `~/.bashrc` or `~/.zshrc`:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**Windows** - Add `%USERPROFILE%\.local\bin` to your PATH via System Settings, or run in PowerShell (as Administrator):
+```powershell
+[Environment]::SetEnvironmentVariable('Path', $env:Path + ';' + $env:USERPROFILE + '\.local\bin', 'User')
+```
+
 ### From Source
+
+If you have Rust installed, you can build from source:
 
 ```bash
 git clone https://github.com/politikl/search.git
@@ -47,15 +73,9 @@ cd search
 cargo install --path .
 ```
 
-### Requirements
-
-- Rust toolchain (install from [rustup.rs](https://rustup.rs))
-- A terminal emulator with Unicode support
-
 Make sure `~/.cargo/bin` is in your PATH:
 
 ```bash
-# Add to your .bashrc, .zshrc, or equivalent
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
@@ -175,14 +195,21 @@ These limitations are by design. Search is meant for quickly finding and reading
 
 ## Uninstall
 
+**If installed via quick install:**
 ```bash
-cargo uninstall search
+rm ~/.local/bin/search
 ```
 
-Or manually remove the binary:
-
+**If installed via cargo:**
 ```bash
+cargo uninstall search
+# or
 rm ~/.cargo/bin/search
+```
+
+**Windows:**
+```powershell
+Remove-Item $env:USERPROFILE\.local\bin\search.exe
 ```
 
 ## Contributing
