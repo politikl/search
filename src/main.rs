@@ -228,6 +228,64 @@ impl App {
     }
 }
 
+fn extract_main_content(html_text: &str) -> String {
+    let document = Html::parse_document(html_text);
+
+    // Site-specific selectors in priority order - targets main content, skips nav/sidebars
+    let selectors = vec![
+        // Wikipedia - the actual article content
+        "#mw-content-text .mw-parser-output",
+        "#mw-content-text",
+        "#bodyContent",
+
+        // StackOverflow
+        ".question .s-prose",
+        ".answercell .s-prose",
+        "#mainbar",
+
+        // Generic article selectors
+        "article .post-content",
+        "article .entry-content",
+        "article .content",
+        "article",
+
+        // Main content areas
+        "main .content",
+        "main article",
+        "#main-content",
+        ".main-content",
+        "[role='main']",
+        "main",
+
+        // Blog/news sites
+        ".post-body",
+        ".article-body",
+        ".story-body",
+
+        // Documentation sites
+        ".markdown-body",
+        ".documentation",
+        ".doc-content",
+        "#readme",
+        "#content",
+    ];
+
+    for sel_str in &selectors {
+        if let Ok(selector) = Selector::parse(sel_str) {
+            if let Some(element) = document.select(&selector).next() {
+                let inner_html = element.html();
+                // Skip if content is too short (probably wrong element)
+                if inner_html.len() > 500 {
+                    return html2text::from_read(inner_html.as_bytes(), 100);
+                }
+            }
+        }
+    }
+
+    // Fallback: use full page
+    html2text::from_read(html_text.as_bytes(), 100)
+}
+
 fn fetch_page(url: &str) -> Result<String, Box<dyn Error>> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -242,8 +300,8 @@ fn fetch_page(url: &str) -> Result<String, Box<dyn Error>> {
 
     let html = response.text()?;
 
-    // Convert HTML to plain text
-    let text = html2text::from_read(html.as_bytes(), 100);
+    // Extract main content and convert to plain text
+    let text = extract_main_content(&html);
 
     Ok(sanitize_display(&text))
 }
