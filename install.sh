@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Search - Terminal Web Browser Installer
-# https://github.com/politikl/search
+# Navim - Terminal Web Browser Installer
+# https://github.com/politikl/navim
 
 set -e
 
-REPO="politikl/search"
+REPO="politikl/navim"
 INSTALL_DIR="$HOME/.local/bin"
 
 # Detect OS and architecture
@@ -25,7 +25,7 @@ case "$OS" in
 esac
 
 echo "Detected: $OS $ARCH"
-echo "Installing search for $TARGET..."
+echo "Installing navim for $TARGET..."
 
 # Get latest release
 LATEST=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
@@ -37,15 +37,15 @@ fi
 echo "Latest version: $LATEST"
 
 # Download binary
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST/search-$TARGET"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST/navim-$TARGET"
 echo "Downloading from: $DOWNLOAD_URL"
 
 mkdir -p "$INSTALL_DIR"
-curl -sL "$DOWNLOAD_URL" -o "$INSTALL_DIR/search"
-chmod +x "$INSTALL_DIR/search"
+curl -sL "$DOWNLOAD_URL" -o "$INSTALL_DIR/navim"
+chmod +x "$INSTALL_DIR/navim"
 
 echo ""
-echo "✓ Search installed to $INSTALL_DIR/search"
+echo "✓ Navim installed to $INSTALL_DIR/navim"
 echo ""
 echo "Add to your PATH by adding this line to your ~/.bashrc or ~/.zshrc:"
 echo ""
@@ -53,6 +53,6 @@ echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
 echo ""
 echo "Then restart your terminal or run: source ~/.bashrc (or ~/.zshrc)"
 echo ""
-echo "Usage: search <query>"
-echo "       search -h     (view history)"
-echo "       search about  (about info)"
+echo "Usage: navim <query>"
+echo "       navim -h     (view history)"
+echo "       navim about  (about info)"
