@@ -4,6 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use image::GenericImageView;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -20,6 +21,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
+use url::Url;
 
 fn truncate_string(s: &str, max_chars: usize) -> String {
     let char_count = s.chars().count();
@@ -37,6 +39,172 @@ fn sanitize_display(s: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+// ASCII art characters from darkest to lightest
+const ASCII_CHARS: &[char] = &[' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
+
+// Convert image bytes to ASCII art
+fn image_to_ascii(image_bytes: &[u8], max_width: u32) -> Option<String> {
+    let img = image::load_from_memory(image_bytes).ok()?;
+
+    let (width, height) = img.dimensions();
+
+    // Calculate new dimensions while maintaining aspect ratio
+    // Terminal characters are roughly 2x taller than wide, so we adjust
+    let aspect_ratio = height as f32 / width as f32;
+    let new_width = max_width.min(width);
+    let new_height = ((new_width as f32 * aspect_ratio) / 2.0) as u32;
+
+    // Skip very small or very large images
+    if new_width < 10 || new_height < 5 || new_height > 50 {
+        return None;
+    }
+
+    let resized = img.resize_exact(new_width, new_height, image::imageops::FilterType::Lanczos3);
+    let gray = resized.to_luma8();
+
+    let mut ascii_art = String::new();
+    ascii_art.push_str("\n┌");
+    for _ in 0..new_width {
+        ascii_art.push('─');
+    }
+    ascii_art.push_str("┐\n");
+
+    for y in 0..new_height {
+        ascii_art.push('│');
+        for x in 0..new_width {
+            let pixel = gray.get_pixel(x, y);
+            let brightness = pixel[0] as usize;
+            let char_index = (brightness * (ASCII_CHARS.len() - 1)) / 255;
+            ascii_art.push(ASCII_CHARS[char_index]);
+        }
+        ascii_art.push_str("│\n");
+    }
+
+    ascii_art.push_str("└");
+    for _ in 0..new_width {
+        ascii_art.push('─');
+    }
+    ascii_art.push_str("┘\n");
+
+    Some(ascii_art)
+}
+
+// Fetch an image and convert to ASCII
+fn fetch_image_as_ascii(image_url: &str, max_width: u32) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let response = client.get(image_url).send().ok()?;
+
+    // Check content type to ensure it's an image
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !content_type.starts_with("image/") {
+        return None;
+    }
+
+    // Skip SVG and GIF (animated)
+    if content_type.contains("svg") || content_type.contains("gif") {
+        return None;
+    }
+
+    let bytes = response.bytes().ok()?;
+
+    // Skip very small images (likely icons/tracking pixels)
+    if bytes.len() < 1000 {
+        return None;
+    }
+
+    image_to_ascii(&bytes, max_width)
+}
+
+// Extract image URLs from HTML (focused on main content area)
+fn extract_image_urls(html: &str, base_url: &str) -> Vec<String> {
+    let document = Html::parse_document(html);
+    let base = Url::parse(base_url).ok();
+
+    let mut urls = Vec::new();
+
+    // Try to find images within main content areas first
+    let content_selectors = [
+        "article img",
+        "main img",
+        "#content img",
+        "#mw-content-text img",  // Wikipedia
+        ".post-content img",
+        ".entry-content img",
+        ".article-body img",
+        "img",  // Fallback to all images
+    ];
+
+    let mut found_images = Vec::new();
+    for sel_str in &content_selectors {
+        if let Ok(selector) = Selector::parse(sel_str) {
+            for img in document.select(&selector).take(15) {
+                found_images.push(img);
+            }
+            if found_images.len() >= 5 {
+                break;  // Found enough images in content area
+            }
+        }
+    }
+
+    // Process found images
+    for img in found_images.iter().take(20) {
+        // Try src first, then data-src (lazy loading)
+        let src = img.value().attr("src")
+            .or_else(|| img.value().attr("data-src"))
+            .or_else(|| img.value().attr("data-lazy-src"));
+
+        if let Some(src) = src {
+            let src_lower = src.to_lowercase();
+
+            // Skip data URLs and common non-content images
+            if src_lower.starts_with("data:")
+                || src_lower.contains("icon")
+                || src_lower.contains("avatar")
+                || src_lower.contains("sprite")
+                || src_lower.contains("tracking")
+                || src_lower.contains("pixel")
+                || src_lower.contains("1x1")
+                || src_lower.contains("badge")
+                || src_lower.contains("button")
+                || src_lower.contains("arrow")
+                || src_lower.contains("spacer")
+                || src_lower.ends_with(".svg")
+                || src_lower.ends_with(".gif")
+                || src_lower.contains("/static/")
+                || src_lower.contains("widget") {
+                continue;
+            }
+
+            // Resolve relative URLs
+            let full_url = if src.starts_with("http") {
+                src.to_string()
+            } else if src.starts_with("//") {
+                format!("https:{}", src)
+            } else if let Some(ref base) = base {
+                base.join(src).map(|u| u.to_string()).unwrap_or_default()
+            } else {
+                continue;
+            };
+
+            if !full_url.is_empty() && !urls.contains(&full_url) {
+                urls.push(full_url);
+            }
+        }
+    }
+
+    urls
 }
 
 // History functionality
@@ -100,12 +268,6 @@ struct SearchResult {
 }
 
 #[derive(PartialEq, Clone)]
-enum Mode {
-    Normal,
-    Insert,
-}
-
-#[derive(PartialEq, Clone)]
 enum View {
     SearchResults,
     WebPage,
@@ -114,7 +276,6 @@ enum View {
 struct App {
     results: Vec<SearchResult>,
     list_state: ListState,
-    mode: Mode,
     view: View,
     query: String,
     should_quit: bool,
@@ -134,7 +295,6 @@ impl App {
         App {
             results,
             list_state,
-            mode: Mode::Normal,
             view: View::SearchResults,
             query,
             should_quit: false,
@@ -207,12 +367,10 @@ impl App {
                         Ok(content) => {
                             self.page_content = content.lines().map(|s| s.to_string()).collect();
                             self.view = View::WebPage;
-                            self.mode = Mode::Normal;
                         }
                         Err(_) => {
                             self.page_content = vec!["Failed to load page.".to_string()];
                             self.view = View::WebPage;
-                            self.mode = Mode::Normal;
                         }
                     }
                 }
@@ -222,7 +380,6 @@ impl App {
 
     fn back_to_results(&mut self) {
         self.view = View::SearchResults;
-        self.mode = Mode::Insert;
         self.page_content.clear();
         self.page_scroll = 0;
     }
@@ -300,8 +457,25 @@ fn fetch_page(url: &str) -> Result<String, Box<dyn Error>> {
 
     let html = response.text()?;
 
+    // Extract image URLs before converting to text
+    let image_urls = extract_image_urls(&html, url);
+
     // Extract main content and convert to plain text
-    let text = extract_main_content(&html);
+    let mut text = extract_main_content(&html);
+
+    // Fetch and render images as ASCII art (limit to first 3 to keep it reasonable)
+    let mut ascii_images = String::new();
+    for img_url in image_urls.iter().take(3) {
+        if let Some(ascii_art) = fetch_image_as_ascii(img_url, 60) {
+            ascii_images.push_str(&ascii_art);
+            ascii_images.push('\n');
+        }
+    }
+
+    // Prepend images to content if any were found
+    if !ascii_images.is_empty() {
+        text = format!("{}\n{}", ascii_images, text);
+    }
 
     Ok(sanitize_display(&text))
 }
@@ -394,16 +568,12 @@ fn draw_search_results(f: &mut ratatui::Frame, app: &mut App) {
         .split(f.area());
 
     // Header
-    let mode_str = match app.mode {
-        Mode::Normal => "NORMAL",
-        Mode::Insert => "INSERT",
-    };
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
-            format!(" {} ", mode_str),
+            " NAVIM ",
             Style::default()
-                .bg(if app.mode == Mode::Insert { Color::Green } else { Color::Blue })
-                .fg(Color::White)
+                .bg(Color::Cyan)
+                .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  Search: "),
@@ -447,12 +617,8 @@ fn draw_search_results(f: &mut ratatui::Frame, app: &mut App) {
 
     f.render_stateful_widget(list, chunks[1], &mut app.list_state);
 
-    // Footer
-    let footer_text = match app.mode {
-        Mode::Normal => " [i] Insert mode  [q] Quit ",
-        Mode::Insert => " [j/k] Navigate  [Enter] Open page  [Esc] Normal mode ",
-    };
-    let footer = Paragraph::new(footer_text)
+    // Footer with intuitive keys
+    let footer = Paragraph::new(" ↑/↓ or j/k: Navigate  Enter: Open  q: Quit ")
         .style(Style::default().fg(Color::Gray))
         .block(Block::default().borders(Borders::ALL).title("Keys"));
     f.render_widget(footer, chunks[2]);
@@ -469,16 +635,12 @@ fn draw_web_page(f: &mut ratatui::Frame, app: &mut App) {
         .split(f.area());
 
     // Header with page info
-    let mode_str = match app.mode {
-        Mode::Normal => "NORMAL",
-        Mode::Insert => "BROWSE",
-    };
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
-            format!(" {} ", mode_str),
+            " READING ",
             Style::default()
-                .bg(if app.mode == Mode::Insert { Color::Magenta } else { Color::Blue })
-                .fg(Color::White)
+                .bg(Color::Green)
+                .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
@@ -511,12 +673,8 @@ fn draw_web_page(f: &mut ratatui::Frame, app: &mut App) {
         .wrap(Wrap { trim: false });
     f.render_widget(page, chunks[1]);
 
-    // Footer
-    let footer_text = match app.mode {
-        Mode::Normal => " [i] Browse mode  [Esc][q] Back to results ",
-        Mode::Insert => " [j/k] Scroll  [J/K] Scroll 10  [g/G] Top/Bottom  [q] Back ",
-    };
-    let footer = Paragraph::new(footer_text)
+    // Footer with intuitive keys
+    let footer = Paragraph::new(" ↑/↓ or j/k: Scroll  Space/b: Page Down/Up  g/G: Top/Bottom  Esc/q: Back ")
         .style(Style::default().fg(Color::Gray))
         .block(Block::default().borders(Borders::ALL).title("Keys"));
     f.render_widget(footer, chunks[2]);
@@ -533,21 +691,11 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, mut app: Ap
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(KeyEvent { code, .. }) = event::read()? {
-                match (&app.view, &app.mode) {
-                    // Search Results - Normal Mode
-                    (View::SearchResults, Mode::Normal) => match code {
-                        KeyCode::Char('q') => {
+                match &app.view {
+                    // Search Results - navigation works immediately
+                    View::SearchResults => match code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
                             app.should_quit = true;
-                        }
-                        KeyCode::Char('i') => {
-                            app.mode = Mode::Insert;
-                        }
-                        _ => {}
-                    },
-                    // Search Results - Insert Mode
-                    (View::SearchResults, Mode::Insert) => match code {
-                        KeyCode::Esc => {
-                            app.mode = Mode::Normal;
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
                             app.next();
@@ -555,33 +703,14 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, mut app: Ap
                         KeyCode::Char('k') | KeyCode::Up => {
                             app.previous();
                         }
-                        KeyCode::Char('h') | KeyCode::Left => {
-                            app.previous();
-                        }
-                        KeyCode::Char('l') | KeyCode::Right => {
-                            app.next();
-                        }
-                        KeyCode::Enter => {
+                        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
                             app.open_selected();
                         }
                         _ => {}
                     },
-                    // Web Page - Normal Mode
-                    (View::WebPage, Mode::Normal) => match code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            app.back_to_results();
-                        }
-                        KeyCode::Char('i') => {
-                            app.mode = Mode::Insert;
-                        }
-                        _ => {}
-                    },
-                    // Web Page - Insert (Browse) Mode
-                    (View::WebPage, Mode::Insert) => match code {
-                        KeyCode::Esc => {
-                            app.mode = Mode::Normal;
-                        }
-                        KeyCode::Char('q') => {
+                    // Web Page - scrolling works immediately
+                    View::WebPage => match code {
+                        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
                             app.back_to_results();
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
@@ -590,29 +719,17 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, mut app: Ap
                         KeyCode::Char('k') | KeyCode::Up => {
                             app.scroll_up(1);
                         }
-                        KeyCode::Char('J') => {
-                            app.scroll_down(10);
-                        }
-                        KeyCode::Char('K') => {
-                            app.scroll_up(10);
-                        }
-                        KeyCode::Char('d') => {
-                            app.scroll_down(10);
-                        }
-                        KeyCode::Char('u') => {
-                            app.scroll_up(10);
-                        }
-                        KeyCode::Char('g') => {
-                            app.page_scroll = 0;
-                        }
-                        KeyCode::Char('G') => {
-                            app.page_scroll = app.page_content.len().saturating_sub(10);
-                        }
-                        KeyCode::PageDown => {
+                        KeyCode::Char(' ') | KeyCode::Char('d') | KeyCode::PageDown => {
                             app.scroll_down(20);
                         }
-                        KeyCode::PageUp => {
+                        KeyCode::Char('b') | KeyCode::Char('u') | KeyCode::PageUp => {
                             app.scroll_up(20);
+                        }
+                        KeyCode::Char('g') | KeyCode::Home => {
+                            app.page_scroll = 0;
+                        }
+                        KeyCode::Char('G') | KeyCode::End => {
+                            app.page_scroll = app.page_content.len().saturating_sub(10);
                         }
                         _ => {}
                     },
@@ -681,7 +798,7 @@ fn show_about() -> Result<(), Box<dyn Error>> {
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "  Version 1.2.0",
+                    "  Version 1.3.0",
                     Style::default().fg(Color::Gray),
                 )),
                 Line::from(""),
@@ -691,8 +808,9 @@ fn show_about() -> Result<(), Box<dyn Error>> {
                 )),
                 Line::from(""),
                 Line::from(Span::styled("  FEATURES", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
-                Line::from(Span::styled("  - Vim-style navigation (hjkl, i for insert, Esc for normal)", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  - Intuitive keyboard navigation (arrows or hjkl)", Style::default().fg(Color::White))),
                 Line::from(Span::styled("  - In-terminal web page rendering", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  - ASCII art image rendering", Style::default().fg(Color::White))),
                 Line::from(Span::styled("  - Privacy-focused with Brave Search backend", Style::default().fg(Color::White))),
                 Line::from(Span::styled("  - No tracking, no cookies, no JavaScript", Style::default().fg(Color::White))),
                 Line::from(Span::styled("  - Lightweight and fast (built in Rust)", Style::default().fg(Color::White))),
@@ -703,13 +821,12 @@ fn show_about() -> Result<(), Box<dyn Error>> {
                 Line::from(Span::styled("  information without leaving the command line.", Style::default().fg(Color::White))),
                 Line::from(""),
                 Line::from(Span::styled("  KEYBINDINGS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
-                Line::from(Span::styled("  i          Enter insert/browse mode", Style::default().fg(Color::White))),
-                Line::from(Span::styled("  Esc        Return to normal mode", Style::default().fg(Color::White))),
-                Line::from(Span::styled("  j/k        Navigate down/up", Style::default().fg(Color::White))),
-                Line::from(Span::styled("  J/K        Scroll 10 lines (in page view)", Style::default().fg(Color::White))),
-                Line::from(Span::styled("  g/G        Jump to top/bottom", Style::default().fg(Color::White))),
-                Line::from(Span::styled("  Enter      Open selected result", Style::default().fg(Color::White))),
-                Line::from(Span::styled("  q          Quit / Go back", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  ↑/↓ or j/k   Navigate / Scroll", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  Enter or →   Open selected result", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  ← or Esc     Go back", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  Space / b    Page down / up", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  g / G        Jump to top / bottom", Style::default().fg(Color::White))),
+                Line::from(Span::styled("  q            Quit", Style::default().fg(Color::White))),
                 Line::from(""),
                 Line::from(Span::styled("  TECHNICAL", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
                 Line::from(Span::styled("  Built with: Rust, ratatui, reqwest, scraper, html2text", Style::default().fg(Color::White))),
