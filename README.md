@@ -23,7 +23,7 @@ Navim brings web browsing directly into your terminal with a clean, keyboard-dri
 ## Features
 
 ### Vim-Style Navigation
-If you know vim, you already know how to use Navim. Press `i` to enter insert mode, navigate with `hjkl`, and `Esc` to return to normal mode. The learning curve is zero for anyone familiar with modal editing.
+If you know vim, you already know how to use Navim. Navigate with `hjkl` or arrow keys - no mode switching required. The learning curve is zero for anyone familiar with keyboard-driven interfaces.
 
 ### In-Terminal Web Rendering
 Don't just see search results - actually read the web pages. Navim converts HTML to clean, readable text rendered directly in your terminal. Articles, documentation, Stack Overflow answers - all readable without opening a browser.
@@ -33,6 +33,9 @@ Navim uses Brave Search as its backend, which doesn't track your searches or bui
 
 ### Lightweight and Fast
 Built in Rust for maximum performance. Navim launches instantly, fetches results quickly, and uses minimal system resources. No Electron, no WebKit, no bloat.
+
+### ASCII Art Images
+Navim converts images from web pages into ASCII art, so you can see visual content right in your terminal without leaving the text-based interface.
 
 ### Distraction-Free
 No ads. No suggested videos. No "people also searched for" rabbit holes. Just the information you asked for, presented cleanly in your terminal.
@@ -103,35 +106,28 @@ The `-h` flag shows all pages you've visited along with the search query that le
 
 ## Keybindings
 
-Navim uses a modal interface inspired by vim. There are two main views: Search Results and Web Page, each with Normal and Insert/Browse modes.
+Navim uses a simple two-view interface: Search Results and Web Page. Navigation works immediately - no mode switching required.
 
 ### Search Results View
 
-| Mode | Key | Action |
-|------|-----|--------|
-| NORMAL | `i` | Enter INSERT mode to navigate results |
-| NORMAL | `q` | Quit the application |
-| INSERT | `j` / `↓` | Move selection down |
-| INSERT | `k` / `↑` | Move selection up |
-| INSERT | `h` / `l` | Navigate through results |
-| INSERT | `Enter` | Open selected page in terminal viewer |
-| INSERT | `Esc` | Return to NORMAL mode |
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `Enter` / `l` / `→` | Open selected page |
+| `q` / `Esc` | Quit the application |
 
 ### Web Page View
 
-| Mode | Key | Action |
-|------|-----|--------|
-| NORMAL | `i` | Enter BROWSE mode to scroll |
-| NORMAL | `q` / `Esc` | Return to search results |
-| BROWSE | `j` / `↓` | Scroll down 1 line |
-| BROWSE | `k` / `↑` | Scroll up 1 line |
-| BROWSE | `J` (Shift+j) | Scroll down 10 lines |
-| BROWSE | `K` (Shift+k) | Scroll up 10 lines |
-| BROWSE | `d` | Scroll down 10 lines (half page) |
-| BROWSE | `u` | Scroll up 10 lines (half page) |
-| BROWSE | `g` | Jump to top of page |
-| BROWSE | `G` | Jump to bottom of page |
-| BROWSE | `q` | Return to search results |
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down 1 line |
+| `k` / `↑` | Scroll up 1 line |
+| `Space` / `d` / `PageDown` | Scroll down 20 lines |
+| `b` / `u` / `PageUp` | Scroll up 20 lines |
+| `g` / `Home` | Jump to top of page |
+| `G` / `End` | Jump to bottom of page |
+| `q` / `Esc` / `h` / `←` | Return to search results |
 
 ## How It Works
 
@@ -177,17 +173,22 @@ Navim is built with a carefully selected stack of Rust crates:
 | `html2text` | Converting web pages to readable terminal text |
 | `ratatui` | Terminal UI framework for the interface |
 | `crossterm` | Cross-platform terminal manipulation |
+| `image` | Image processing for ASCII art conversion |
+| `url` | URL parsing and resolution |
+| `serde` | JSON serialization for history storage |
+| `chrono` | DateTime handling for history timestamps |
 
 The architecture separates concerns cleanly:
 - **Search module**: Handles Brave Search queries and result parsing
 - **Fetch module**: Retrieves and converts web pages to text
+- **Image module**: Converts web images to ASCII art
 - **UI module**: Manages the TUI state and rendering
-- **Input handling**: Processes keyboard events and mode switching
+- **Input handling**: Processes keyboard events and view navigation
 
 ## Limitations
 
 - **No JavaScript**: Pages that require JavaScript to display content won't render properly
-- **No Images**: This is a text-based browser - images are not displayed
+- **ASCII Images Only**: Images are converted to ASCII art - no full-color image rendering
 - **No Forms**: You cannot submit forms or log into websites
 - **No CSS Styling**: Pages are rendered as plain text without visual styling
 
