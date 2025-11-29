@@ -221,6 +221,7 @@ struct App {
     // Cursor position in web page (line, column)
     cursor_line: usize,
     cursor_col: usize,
+    desired_col: usize,  // Remembered column for vertical movement
     // Home screen
     search_input: String,
     cursor_position: usize,
@@ -246,6 +247,7 @@ impl App {
             selected_link: None,
             cursor_line: 0,
             cursor_col: 0,
+            desired_col: 0,
             search_input: String::new(),
             cursor_position: 0,
         }
@@ -266,6 +268,7 @@ impl App {
             selected_link: None,
             cursor_line: 0,
             cursor_col: 0,
+            desired_col: 0,
             search_input: String::new(),
             cursor_position: 0,
         }
@@ -363,6 +366,7 @@ impl App {
         self.selected_link = None;
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.desired_col = 0;
     }
 
     // Move cursor right by one character
@@ -376,6 +380,8 @@ impl App {
                 self.cursor_col = 0;
             }
         }
+        // Horizontal movement updates desired_col
+        self.desired_col = self.cursor_col;
         self.update_selected_link();
         self.ensure_cursor_visible();
     }
@@ -391,6 +397,8 @@ impl App {
                 self.cursor_col = line.chars().count();
             }
         }
+        // Horizontal movement updates desired_col
+        self.desired_col = self.cursor_col;
         self.update_selected_link();
         self.ensure_cursor_visible();
     }
@@ -399,9 +407,10 @@ impl App {
     fn cursor_down(&mut self) {
         if self.cursor_line < self.page_content.len().saturating_sub(1) {
             self.cursor_line += 1;
-            // Clamp column to line length
+            // Try to reach desired_col, but clamp to line length
             if let Some(line) = self.page_content.get(self.cursor_line) {
-                self.cursor_col = self.cursor_col.min(line.chars().count());
+                let line_len = line.chars().count();
+                self.cursor_col = self.desired_col.min(line_len);
             }
         }
         self.update_selected_link();
@@ -412,9 +421,10 @@ impl App {
     fn cursor_up(&mut self) {
         if self.cursor_line > 0 {
             self.cursor_line -= 1;
-            // Clamp column to line length
+            // Try to reach desired_col, but clamp to line length
             if let Some(line) = self.page_content.get(self.cursor_line) {
-                self.cursor_col = self.cursor_col.min(line.chars().count());
+                let line_len = line.chars().count();
+                self.cursor_col = self.desired_col.min(line_len);
             }
         }
         self.update_selected_link();
@@ -453,6 +463,8 @@ impl App {
                 }
             }
         }
+        // Word movement updates desired_col
+        self.desired_col = self.cursor_col;
         self.update_selected_link();
         self.ensure_cursor_visible();
     }
@@ -487,6 +499,8 @@ impl App {
                 }
             }
         }
+        // Word movement updates desired_col
+        self.desired_col = self.cursor_col;
         self.update_selected_link();
         self.ensure_cursor_visible();
     }
@@ -535,6 +549,7 @@ impl App {
         if let Some(link) = self.page_links.get(idx) {
             self.cursor_line = link.line;
             self.cursor_col = link.col_start;
+            self.desired_col = link.col_start;
             self.selected_link = Some(idx);
             self.ensure_cursor_visible();
         }
@@ -575,6 +590,7 @@ impl App {
         self.selected_link = None;
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.desired_col = 0;
 
         match fetch_page(url) {
             Ok((content, links)) => {
