@@ -355,7 +355,6 @@ impl App {
 fn should_render_image(src: &str) -> bool {
     let src_lower = src.to_lowercase();
 
-    // Skip data URLs and common non-content images
     !(src_lower.starts_with("data:")
         || src_lower.contains("icon")
         || src_lower.contains("avatar")
@@ -389,10 +388,313 @@ fn resolve_url(src: &str, base: &Option<Url>) -> Option<String> {
     }
 }
 
-// Extract content with inline images
+// Custom HTML renderer that preserves document structure
+struct HtmlRenderer {
+    output: String,
+    base_url: Option<Url>,
+    image_count: usize,
+    max_images: usize,
+    list_depth: usize,
+    in_pre: bool,
+    last_was_block: bool,
+}
+
+impl HtmlRenderer {
+    fn new(base_url: &str) -> Self {
+        HtmlRenderer {
+            output: String::new(),
+            base_url: Url::parse(base_url).ok(),
+            image_count: 0,
+            max_images: 3,
+            list_depth: 0,
+            in_pre: false,
+            last_was_block: true,
+        }
+    }
+
+    fn render_element(&mut self, element: scraper::ElementRef) {
+        let tag = element.value().name();
+
+        // Skip unwanted elements
+        if matches!(tag, "script" | "style" | "nav" | "header" | "footer" | "aside" | "noscript" | "iframe" | "form") {
+            return;
+        }
+
+        // Skip elements with hidden classes
+        if let Some(class) = element.value().attr("class") {
+            let class_lower = class.to_lowercase();
+            if class_lower.contains("hidden") || class_lower.contains("sidebar")
+                || class_lower.contains("nav") || class_lower.contains("menu")
+                || class_lower.contains("footer") || class_lower.contains("header")
+                || class_lower.contains("advertisement") || class_lower.contains("ad-") {
+                return;
+            }
+        }
+
+        match tag {
+            // Block elements that need newlines
+            "p" => {
+                self.ensure_blank_line();
+                self.render_children(element);
+                self.ensure_newline();
+                self.last_was_block = true;
+            }
+            "div" | "section" | "article" => {
+                self.ensure_newline();
+                self.render_children(element);
+                self.ensure_newline();
+                self.last_was_block = true;
+            }
+            "br" => {
+                self.output.push('\n');
+                self.last_was_block = true;
+            }
+            "hr" => {
+                self.ensure_blank_line();
+                self.output.push_str("────────────────────────────────────────");
+                self.ensure_blank_line();
+                self.last_was_block = true;
+            }
+
+            // Headings
+            "h1" => {
+                self.ensure_blank_line();
+                self.output.push_str("═══ ");
+                self.render_children(element);
+                self.output.push_str(" ═══");
+                self.ensure_blank_line();
+                self.last_was_block = true;
+            }
+            "h2" => {
+                self.ensure_blank_line();
+                self.output.push_str("━━ ");
+                self.render_children(element);
+                self.output.push_str(" ━━");
+                self.ensure_blank_line();
+                self.last_was_block = true;
+            }
+            "h3" => {
+                self.ensure_blank_line();
+                self.output.push_str("── ");
+                self.render_children(element);
+                self.output.push_str(" ──");
+                self.ensure_blank_line();
+                self.last_was_block = true;
+            }
+            "h4" | "h5" | "h6" => {
+                self.ensure_blank_line();
+                self.output.push_str("▸ ");
+                self.render_children(element);
+                self.ensure_newline();
+                self.last_was_block = true;
+            }
+
+            // Lists
+            "ul" | "ol" => {
+                self.ensure_newline();
+                self.list_depth += 1;
+                self.render_children(element);
+                self.list_depth -= 1;
+                self.ensure_newline();
+                self.last_was_block = true;
+            }
+            "li" => {
+                self.ensure_newline();
+                let indent = "  ".repeat(self.list_depth.saturating_sub(1));
+                self.output.push_str(&indent);
+                self.output.push_str("• ");
+                self.render_children(element);
+                self.last_was_block = true;
+            }
+
+            // Code and preformatted
+            "pre" => {
+                self.ensure_blank_line();
+                self.output.push_str("┌─────────────────────────────────────────┐\n");
+                self.in_pre = true;
+                self.render_children(element);
+                self.in_pre = false;
+                self.ensure_newline();
+                self.output.push_str("└─────────────────────────────────────────┘");
+                self.ensure_blank_line();
+                self.last_was_block = true;
+            }
+            "code" => {
+                if !self.in_pre {
+                    self.output.push('`');
+                    self.render_children(element);
+                    self.output.push('`');
+                } else {
+                    self.render_children(element);
+                }
+            }
+
+            // Inline formatting
+            "strong" | "b" => {
+                self.output.push_str("**");
+                self.render_children(element);
+                self.output.push_str("**");
+            }
+            "em" | "i" => {
+                self.output.push('_');
+                self.render_children(element);
+                self.output.push('_');
+            }
+
+            // Links
+            "a" => {
+                self.render_children(element);
+                if let Some(href) = element.value().attr("href") {
+                    if href.starts_with("http") && !href.contains("javascript:") {
+                        self.output.push_str(" [→ ");
+                        self.output.push_str(&truncate_string(href, 40));
+                        self.output.push(']');
+                    }
+                }
+            }
+
+            // Images - render inline where they appear
+            "img" => {
+                if self.image_count < self.max_images {
+                    let src = element.value().attr("src")
+                        .or_else(|| element.value().attr("data-src"))
+                        .or_else(|| element.value().attr("data-lazy-src"));
+
+                    if let Some(src) = src {
+                        if should_render_image(src) {
+                            if let Some(full_url) = resolve_url(src, &self.base_url) {
+                                if let Some(ascii_art) = fetch_image_as_ascii(&full_url, 60) {
+                                    self.ensure_blank_line();
+                                    // Add image caption if available
+                                    if let Some(alt) = element.value().attr("alt") {
+                                        if !alt.is_empty() && alt.len() < 100 {
+                                            self.output.push_str(&format!("[Image: {}]\n", alt));
+                                        }
+                                    }
+                                    self.output.push_str(&ascii_art);
+                                    self.ensure_blank_line();
+                                    self.image_count += 1;
+                                    self.last_was_block = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Figure (often wraps images with captions)
+            "figure" => {
+                self.ensure_newline();
+                self.render_children(element);
+                self.ensure_newline();
+                self.last_was_block = true;
+            }
+            "figcaption" => {
+                self.output.push_str("  ↳ ");
+                self.render_children(element);
+                self.ensure_newline();
+            }
+
+            // Blockquote
+            "blockquote" => {
+                self.ensure_blank_line();
+                let start_len = self.output.len();
+                self.render_children(element);
+                // Add quote markers to each line
+                let content = self.output[start_len..].to_string();
+                self.output.truncate(start_len);
+                for line in content.lines() {
+                    self.output.push_str("│ ");
+                    self.output.push_str(line);
+                    self.output.push('\n');
+                }
+                self.last_was_block = true;
+            }
+
+            // Tables - simplified rendering
+            "table" => {
+                self.ensure_blank_line();
+                self.render_children(element);
+                self.ensure_blank_line();
+                self.last_was_block = true;
+            }
+            "tr" => {
+                self.ensure_newline();
+                self.output.push_str("│ ");
+                self.render_children(element);
+                self.last_was_block = true;
+            }
+            "th" | "td" => {
+                self.render_children(element);
+                self.output.push_str(" │ ");
+            }
+
+            // Span and other inline elements
+            "span" | "label" | "time" | "small" | "sup" | "sub" => {
+                self.render_children(element);
+            }
+
+            // Default: just render children
+            _ => {
+                self.render_children(element);
+            }
+        }
+    }
+
+    fn render_children(&mut self, element: scraper::ElementRef) {
+        for child in element.children() {
+            match child.value() {
+                scraper::Node::Text(text) => {
+                    let content = text.text.to_string();
+                    if self.in_pre {
+                        self.output.push_str(&content);
+                    } else {
+                        // Normalize whitespace
+                        let normalized: String = content
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if !normalized.is_empty() {
+                            if !self.last_was_block && !self.output.is_empty()
+                                && !self.output.ends_with(' ') && !self.output.ends_with('\n') {
+                                self.output.push(' ');
+                            }
+                            self.output.push_str(&normalized);
+                            self.last_was_block = false;
+                        }
+                    }
+                }
+                scraper::Node::Element(_) => {
+                    if let Some(child_elem) = scraper::ElementRef::wrap(child) {
+                        self.render_element(child_elem);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn ensure_newline(&mut self) {
+        if !self.output.is_empty() && !self.output.ends_with('\n') {
+            self.output.push('\n');
+        }
+    }
+
+    fn ensure_blank_line(&mut self) {
+        self.ensure_newline();
+        if !self.output.ends_with("\n\n") {
+            self.output.push('\n');
+        }
+    }
+
+    fn finish(self) -> String {
+        self.output
+    }
+}
+
+// Extract and render content with proper structure
 fn extract_content_with_images(html: &str, base_url: &str) -> String {
     let document = Html::parse_document(html);
-    let base = Url::parse(base_url).ok();
 
     // Find the main content element
     let content_selectors = vec![
@@ -420,99 +722,38 @@ fn extract_content_with_images(html: &str, base_url: &str) -> String {
         ".doc-content",
         "#readme",
         "#content",
+        "body",
     ];
 
-    let mut content_html = String::new();
-
+    // Find the best content element
+    let mut content_element = None;
     for sel_str in &content_selectors {
         if let Ok(selector) = Selector::parse(sel_str) {
             if let Some(element) = document.select(&selector).next() {
                 let inner = element.html();
                 if inner.len() > 500 {
-                    content_html = inner;
+                    content_element = Some(element);
                     break;
                 }
             }
         }
     }
 
-    if content_html.is_empty() {
-        content_html = html.to_string();
-    }
+    // Render the content
+    let mut renderer = HtmlRenderer::new(base_url);
 
-    // Parse the content and find images with their positions
-    let content_doc = Html::parse_fragment(&content_html);
-    let img_selector = Selector::parse("img").unwrap();
-
-    // Collect image positions and URLs
-    let mut images_to_insert: Vec<(String, String)> = Vec::new(); // (placeholder, ascii_art)
-    let mut image_count = 0;
-
-    for img in content_doc.select(&img_selector) {
-        if image_count >= 3 {
-            break;
-        }
-
-        let src = img.value().attr("src")
-            .or_else(|| img.value().attr("data-src"))
-            .or_else(|| img.value().attr("data-lazy-src"));
-
-        if let Some(src) = src {
-            if !should_render_image(src) {
-                continue;
-            }
-
-            if let Some(full_url) = resolve_url(src, &base) {
-                if let Some(ascii_art) = fetch_image_as_ascii(&full_url, 60) {
-                    let alt = img.value().attr("alt").unwrap_or("image");
-                    let placeholder = format!("[IMG:{}]", alt);
-                    images_to_insert.push((placeholder.clone(), ascii_art));
-                    image_count += 1;
-                }
+    if let Some(element) = content_element {
+        renderer.render_element(element);
+    } else {
+        // Fallback to body
+        if let Ok(selector) = Selector::parse("body") {
+            if let Some(body) = document.select(&selector).next() {
+                renderer.render_element(body);
             }
         }
     }
 
-    // Convert HTML to text
-    let mut text = html2text::from_read(content_html.as_bytes(), 100);
-
-    // Insert ASCII art where [IMG:alt] placeholders might logically go
-    // Since html2text doesn't preserve image markers, we'll insert images
-    // at paragraph breaks throughout the content
-    if !images_to_insert.is_empty() {
-        let paragraphs: Vec<&str> = text.split("\n\n").collect();
-        let total_paragraphs = paragraphs.len();
-
-        if total_paragraphs > 1 {
-            let mut result = String::new();
-            let insert_interval = total_paragraphs / (images_to_insert.len() + 1);
-            let mut img_idx = 0;
-
-            for (i, para) in paragraphs.iter().enumerate() {
-                result.push_str(para);
-                result.push_str("\n\n");
-
-                // Insert image after certain paragraphs
-                if img_idx < images_to_insert.len() {
-                    let insert_after = (img_idx + 1) * insert_interval;
-                    if i + 1 >= insert_after {
-                        result.push_str(&images_to_insert[img_idx].1);
-                        result.push_str("\n\n");
-                        img_idx += 1;
-                    }
-                }
-            }
-            text = result;
-        } else {
-            // Single paragraph or no clear structure - put images at the end
-            for (_, ascii_art) in images_to_insert {
-                text.push_str("\n\n");
-                text.push_str(&ascii_art);
-            }
-        }
-    }
-
-    text
+    renderer.finish()
 }
 
 fn fetch_page(url: &str) -> Result<String, Box<dyn Error>> {
