@@ -222,6 +222,8 @@ struct App {
     cursor_line: usize,
     cursor_col: usize,
     desired_col: usize,  // Remembered column for vertical movement
+    // Vim-style count prefix (e.g., 20j)
+    count_prefix: Option<usize>,
     // Home screen
     search_input: String,
     cursor_position: usize,
@@ -248,6 +250,7 @@ impl App {
             cursor_line: 0,
             cursor_col: 0,
             desired_col: 0,
+            count_prefix: None,
             search_input: String::new(),
             cursor_position: 0,
         }
@@ -269,9 +272,23 @@ impl App {
             cursor_line: 0,
             cursor_col: 0,
             desired_col: 0,
+            count_prefix: None,
             search_input: String::new(),
             cursor_position: 0,
         }
+    }
+
+    // Get the count and reset it
+    fn take_count(&mut self) -> usize {
+        let count = self.count_prefix.unwrap_or(1);
+        self.count_prefix = None;
+        count
+    }
+
+    // Add a digit to the count prefix
+    fn add_count_digit(&mut self, digit: u32) {
+        let current = self.count_prefix.unwrap_or(0);
+        self.count_prefix = Some(current * 10 + digit as usize);
     }
 
     fn insert_char(&mut self, c: char) {
@@ -403,7 +420,7 @@ impl App {
         self.ensure_cursor_visible();
     }
 
-    // Move cursor down one line
+    // Move cursor down one line, skipping whitespace-only positions
     fn cursor_down(&mut self) {
         if self.cursor_line < self.page_content.len().saturating_sub(1) {
             self.cursor_line += 1;
@@ -417,7 +434,7 @@ impl App {
         self.ensure_cursor_visible();
     }
 
-    // Move cursor up one line
+    // Move cursor up one line, skipping whitespace-only positions
     fn cursor_up(&mut self) {
         if self.cursor_line > 0 {
             self.cursor_line -= 1;
@@ -594,7 +611,10 @@ impl App {
 
         match fetch_page(url) {
             Ok((content, links)) => {
-                self.page_content = content.lines().map(|s| s.to_string()).collect();
+                // Normalize all whitespace to regular spaces
+                self.page_content = content.lines()
+                    .map(|s| s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect())
+                    .collect();
                 self.page_links = links;
                 self.view = View::WebPage;
             }
@@ -1271,125 +1291,138 @@ fn draw_web_page(f: &mut ratatui::Frame, app: &mut App) {
     .block(Block::default().borders(Borders::ALL).title(truncate_string(&app.page_url, 60)));
     f.render_widget(header, chunks[0]);
 
-    // Calculate line number width
+    // Calculate line number width (for relative numbers, max is total lines)
     let total_lines = app.page_content.len();
     let line_num_width = total_lines.to_string().len().max(3);
 
-    // Page content with link highlighting
+    // Page content area dimensions
     let visible_height = chunks[1].height.saturating_sub(2) as usize;
+    let content_width = chunks[1].width.saturating_sub(2 + line_num_width as u16 + 4) as usize; // borders + line nums + separator
 
     // Get the selected link info for highlighting
     let selected_link_info = app.selected_link.and_then(|idx| {
         app.page_links.get(idx).map(|l| (l.line, l.col_start, l.col_end))
     });
 
-    // High contrast styles for dark terminals
+    // Styles
     let bg_style = Style::default().fg(Color::White);
-    let line_num_style = Style::default().fg(Color::Green);
+    let line_num_style = Style::default().fg(Color::DarkGray);
+    let current_line_num_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let wrap_indicator_style = Style::default().fg(Color::DarkGray);
 
-    // Build content with proper highlighting
-    let content_lines: Vec<Line> = app
-        .page_content
-        .iter()
-        .enumerate()
-        .skip(app.page_scroll)
-        .take(visible_height)
-        .map(|(line_num, line_text)| {
-            // Line number
-            let line_num_str = format!("{:>width$} │ ", line_num + 1, width = line_num_width);
+    // Build display lines with wrapping
+    let mut display_lines: Vec<Line> = Vec::new();
+    let mut current_display_row = 0;
 
-            // Get all links on this line
-            let links_on_line: Vec<&PageLink> = app.page_links.iter()
-                .filter(|l| l.line == line_num)
-                .collect();
+    // Safety: ensure content_width is at least 1 to prevent infinite loops
+    let content_width = content_width.max(1);
 
-            // Check if cursor is on this line
-            let cursor_on_line = app.cursor_line == line_num;
+    // Skip lines based on scroll position
+    let start_line = app.page_scroll;
 
+    // Render lines starting from start_line
+    for (line_num, line_text) in app.page_content.iter().enumerate().skip(start_line) {
+        if current_display_row >= visible_height {
+            break;
+        }
+
+        let chars: Vec<char> = line_text.chars().collect();
+        let cursor_on_line = app.cursor_line == line_num;
+
+        // Get all links on this line
+        let links_on_line: Vec<&PageLink> = app.page_links.iter()
+            .filter(|l| l.line == line_num)
+            .collect();
+        let mut sorted_links = links_on_line.clone();
+        sorted_links.sort_by_key(|l| l.col_start);
+
+        // Calculate relative line number
+        let rel_distance = (line_num as isize - app.cursor_line as isize).abs() as usize;
+        let line_num_display = if cursor_on_line {
+            format!("{:>width$}", line_num + 1, width = line_num_width)
+        } else {
+            format!("{:>width$}", rel_distance, width = line_num_width)
+        };
+
+        // Handle empty lines
+        if chars.is_empty() {
+            let mut spans: Vec<Span> = Vec::new();
+            let num_style = if cursor_on_line { current_line_num_style } else { line_num_style };
+            spans.push(Span::styled(format!("{} │ ", line_num_display), num_style));
+            if cursor_on_line && app.cursor_col == 0 {
+                spans.push(Span::styled(" ", Style::default().bg(Color::Blue).fg(Color::White)));
+            }
+            display_lines.push(Line::from(spans));
+            current_display_row += 1;
+            continue;
+        }
+
+        // Wrap long lines - each wrap gets its own line number
+        let mut char_pos = 0;
+        let mut wrap_line_num = line_num;
+
+        while char_pos < chars.len() && current_display_row < visible_height {
             let mut spans: Vec<Span> = Vec::new();
 
-            // Add line number
-            spans.push(Span::styled(line_num_str, line_num_style));
-
-            let chars: Vec<char> = line_text.chars().collect();
-
-            if links_on_line.is_empty() && !cursor_on_line {
-                // No links and no cursor on this line - render with gray background
-                spans.push(Span::styled(line_text.as_str(), bg_style));
+            // Calculate relative line number for this display row
+            let is_cursor_wrap = cursor_on_line && app.cursor_col >= char_pos && app.cursor_col < char_pos + content_width;
+            let wrap_rel_distance = (wrap_line_num as isize - app.cursor_line as isize).abs() as usize;
+            let wrap_line_display = if is_cursor_wrap && cursor_on_line {
+                format!("{:>width$}", line_num + 1, width = line_num_width)
             } else {
-                // Build spans with link highlighting and cursor
-                let mut pos = 0;
+                format!("{:>width$}", wrap_rel_distance, width = line_num_width)
+            };
 
-                // Sort links by position
-                let mut sorted_links = links_on_line.clone();
-                sorted_links.sort_by_key(|l| l.col_start);
+            let num_style = if is_cursor_wrap && cursor_on_line { current_line_num_style } else { line_num_style };
+            spans.push(Span::styled(format!("{} │ ", wrap_line_display), num_style));
 
-                for link in &sorted_links {
-                    // Add text before this link (with possible cursor)
-                    if pos < link.col_start && link.col_start <= chars.len() {
-                        for i in pos..link.col_start {
-                            let ch = chars.get(i).map(|c| c.to_string()).unwrap_or(" ".to_string());
-                            if cursor_on_line && i == app.cursor_col {
-                                // Cursor position - blue box
-                                spans.push(Span::styled(ch, Style::default().bg(Color::Blue).fg(Color::White)));
-                            } else {
-                                spans.push(Span::styled(ch, bg_style));
-                            }
-                        }
-                    }
+            // Calculate end position for this row
+            let row_end = (char_pos + content_width).min(chars.len());
 
-                    // Add the link text with highlighting
-                    let link_end = link.col_end.min(chars.len());
-                    let link_start = link.col_start.min(chars.len());
-                    if link_start < link_end {
-                        // Check if this is the selected link (cursor is on it)
-                        let is_selected = selected_link_info.map_or(false, |(sel_line, sel_start, sel_end)| {
-                            line_num == sel_line && link.col_start == sel_start && link.col_end == sel_end
-                        });
+            // Render characters for this row
+            for i in char_pos..row_end {
+                let ch = chars[i].to_string();
 
-                        for i in link_start..link_end {
-                            let ch = chars.get(i).map(|c| c.to_string()).unwrap_or(" ".to_string());
-                            if cursor_on_line && i == app.cursor_col {
-                                // Cursor on link - blue cursor takes priority
-                                spans.push(Span::styled(ch, Style::default().bg(Color::Blue).fg(Color::White)));
-                            } else if is_selected {
-                                // Selected link - orange/yellow background
-                                spans.push(Span::styled(
-                                    ch,
-                                    Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD),
-                                ));
-                            } else {
-                                // Regular link - cyan text, underlined
-                                spans.push(Span::styled(
-                                    ch,
-                                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
-                                ));
-                            }
-                        }
-                    }
-                    pos = link_end;
-                }
+                // Check if this char is part of a link
+                let link_info = sorted_links.iter().find(|l| i >= l.col_start && i < l.col_end);
 
-                // Add remaining text after last link (with possible cursor)
-                for i in pos..chars.len() {
-                    let ch = chars[i].to_string();
-                    if cursor_on_line && i == app.cursor_col {
-                        // Cursor position - blue box
-                        spans.push(Span::styled(ch, Style::default().bg(Color::Blue).fg(Color::White)));
+                if cursor_on_line && i == app.cursor_col {
+                    // Cursor position - blue box
+                    spans.push(Span::styled(ch, Style::default().bg(Color::Blue).fg(Color::White)));
+                } else if let Some(link) = link_info {
+                    // Check if this is the selected link
+                    let is_selected = selected_link_info.map_or(false, |(sel_line, sel_start, sel_end)| {
+                        line_num == sel_line && link.col_start == sel_start && link.col_end == sel_end
+                    });
+
+                    if is_selected {
+                        spans.push(Span::styled(
+                            ch,
+                            Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD),
+                        ));
                     } else {
-                        spans.push(Span::styled(ch, bg_style));
+                        spans.push(Span::styled(
+                            ch,
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                        ));
                     }
-                }
-
-                // If cursor is at end of line
-                if cursor_on_line && app.cursor_col >= chars.len() {
-                    spans.push(Span::styled(" ", Style::default().bg(Color::Blue).fg(Color::White)));
+                } else {
+                    spans.push(Span::styled(ch, bg_style));
                 }
             }
 
-            Line::from(spans)
-        })
-        .collect();
+            // Cursor at end of line (on last wrap segment)
+            if cursor_on_line && app.cursor_col >= row_end && row_end == chars.len() {
+                spans.push(Span::styled(" ", Style::default().bg(Color::Blue).fg(Color::White)));
+            }
+
+            display_lines.push(Line::from(spans));
+            current_display_row += 1;
+
+            char_pos = row_end;
+            wrap_line_num += 1;
+        }
+    }
 
     let scroll_info = format!(
         " Line {}/{} Col {} ",
@@ -1398,12 +1431,11 @@ fn draw_web_page(f: &mut ratatui::Frame, app: &mut App) {
         app.cursor_col
     );
 
-    let page = Paragraph::new(content_lines)
+    let page = Paragraph::new(display_lines)
         .block(Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green))
-            .title(scroll_info))
-        .wrap(Wrap { trim: false });
+            .title(scroll_info));
     f.render_widget(page, chunks[1]);
 
     // Footer - show selected link URL or navigation help
@@ -1612,71 +1644,117 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, mut app: Ap
                         }
                         _ => {}
                     },
-                    // Web Page - vim-style cursor navigation
+                    // Web Page - vim-style cursor navigation with count prefix
                     View::WebPage => match code {
                         KeyCode::Char('q') | KeyCode::Esc => {
+                            app.count_prefix = None;
                             app.back_to_results();
+                        }
+                        // Number keys for count prefix (1-9 start, 0 only if already have prefix)
+                        KeyCode::Char(c @ '1'..='9') => {
+                            app.add_count_digit(c.to_digit(10).unwrap());
+                        }
+                        KeyCode::Char('0') if app.count_prefix.is_some() => {
+                            app.add_count_digit(0);
                         }
                         // Cursor movement - h/l for character, j/k for line
                         KeyCode::Char('h') | KeyCode::Left => {
-                            app.cursor_left();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.cursor_left();
+                            }
                         }
                         KeyCode::Char('l') | KeyCode::Right => {
-                            app.cursor_right();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.cursor_right();
+                            }
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
-                            app.cursor_down();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.cursor_down();
+                            }
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
-                            app.cursor_up();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.cursor_up();
+                            }
                         }
                         // Word movement - w/b
                         KeyCode::Char('w') => {
-                            app.cursor_next_word();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.cursor_next_word();
+                            }
                         }
                         KeyCode::Char('b') => {
-                            app.cursor_prev_word();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.cursor_prev_word();
+                            }
                         }
                         // Link jumping - L/H (capital)
                         KeyCode::Char('L') | KeyCode::Tab => {
-                            app.next_link();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.next_link();
+                            }
                         }
                         KeyCode::Char('H') | KeyCode::BackTab => {
-                            app.prev_link();
+                            let count = app.take_count();
+                            for _ in 0..count {
+                                app.prev_link();
+                            }
                         }
                         // Page scrolling
                         KeyCode::Char(' ') | KeyCode::Char('d') | KeyCode::PageDown => {
+                            app.count_prefix = None;
                             app.page_scroll = app.page_scroll.saturating_add(20);
                             app.cursor_line = app.page_scroll;
                             app.cursor_col = 0;
                             app.update_selected_link();
                         }
                         KeyCode::Char('u') | KeyCode::PageUp => {
+                            app.count_prefix = None;
                             app.page_scroll = app.page_scroll.saturating_sub(20);
                             app.cursor_line = app.page_scroll;
                             app.cursor_col = 0;
                             app.update_selected_link();
                         }
                         KeyCode::Char('g') | KeyCode::Home => {
+                            app.count_prefix = None;
                             app.page_scroll = 0;
                             app.cursor_line = 0;
                             app.cursor_col = 0;
                             app.update_selected_link();
                         }
                         KeyCode::Char('G') | KeyCode::End => {
-                            app.page_scroll = app.page_content.len().saturating_sub(10);
-                            app.cursor_line = app.page_scroll;
-                            app.cursor_col = 0;
+                            // If count prefix, go to that line; otherwise go to end
+                            if let Some(line_num) = app.count_prefix.take() {
+                                let target = line_num.saturating_sub(1).min(app.page_content.len().saturating_sub(1));
+                                app.cursor_line = target;
+                                app.cursor_col = 0;
+                                app.ensure_cursor_visible();
+                            } else {
+                                app.page_scroll = app.page_content.len().saturating_sub(10);
+                                app.cursor_line = app.page_content.len().saturating_sub(1);
+                                app.cursor_col = 0;
+                            }
                             app.update_selected_link();
                         }
                         // Follow link
                         KeyCode::Enter => {
+                            app.count_prefix = None;
                             if let Some((url, title)) = app.get_link_at_cursor() {
                                 add_to_history(&app.query, &title, &url);
                                 app.load_page(&url, &title);
                             }
                         }
-                        _ => {}
+                        _ => {
+                            app.count_prefix = None;
+                        }
                     },
                 }
             }
@@ -1743,7 +1821,7 @@ fn show_about() -> Result<(), Box<dyn Error>> {
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "  Version 1.3.1",
+                    "  Version 2.0.0",
                     Style::default().fg(Color::Gray),
                 )),
                 Line::from(""),
